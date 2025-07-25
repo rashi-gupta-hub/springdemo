@@ -96,22 +96,28 @@ def get_active_jobs_with_ids(sparkUI_link):
                 print(f"Fetching Environment tab: {env_tab_url}")
 
                 env_resp = requests.get(env_tab_url)
-                env_tree = html.fromstring(env_resp.content)
-                # Try extracting user.dir value
-                user_dir_elem = env_tree.xpath("//td[text()='user.dir']/following-sibling::td[1]")
-                if user_dir_elem:
-                    user_dir_val = user_dir_elem[0].text_content().strip()
-                    print(f"user.dir value: {user_dir_val}")
-                    match = re.search(r'(driver-\d+-\d+)', user_dir_val)
-                    if match:
-                        driver_id = match.group(1)
-                        print(f"Extracted driver id: {driver_id}")
-                    else:
-                        print("Regex did not match, fallback to user.dir value.")
-                        driver_id = user_dir_val
+                print(f"Environment tab HTTP status: {env_resp.status_code}")
+                if env_resp.status_code != 200:
+                    print("Bad HTTP response for Environment tab!")
+                    print(env_resp.text[:500])
+                    driver_id = "(Unable to fetch Environment tab)"
                 else:
-                    print("user.dir not found! Dumping Environment tab HTML for debugging:")
-                    print(env_resp.text[:1000]) # Print first 1000 chars for inspection
+                    env_tree = html.fromstring(env_resp.content)
+                    # Try extracting user.dir value
+                    user_dir_elem = env_tree.xpath("//td[text()='user.dir']/following-sibling::td[1]")
+                    if user_dir_elem:
+                        user_dir_val = user_dir_elem[0].text_content().strip()
+                        print(f"user.dir value: {user_dir_val}")
+                        match = re.search(r'(driver-\d+-\d+)', user_dir_val)
+                        if match:
+                            driver_id = match.group(1)
+                            print(f"Extracted driver id: {driver_id}")
+                        else:
+                            print("Regex did not match, fallback to user.dir value.")
+                            driver_id = user_dir_val
+                    else:
+                        print("user.dir not found! Dumping Environment tab HTML for debugging:")
+                        print(env_resp.text[:1000])
 
             except Exception as e:
                 print(f"Error fetching driver id for {job['application_id']}: {e}")
