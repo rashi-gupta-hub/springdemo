@@ -1,0 +1,136 @@
+from lxml import html
+import requests
+import re
+
+def get_active_jobs_with_ids(sparkUI_link):
+    jobs_url = sparkUI_link.rstrip('/')
+    active_jobs = []
+
+    print(f"Fetching {jobs_url} ...")
+    response = requests.get(jobs_url)
+    print(f"Status Code: {response.status_code}")
+    tree = html.fromstring(response.content)
+
+    # Find the Running Applications table
+    tables = tree.xpath("//table")
+    print(f"Found {len(tables)} tables total in page.")
+
+    target_table = None
+    for idx, table in enumerate(tables):
+        headers = [th.text_content().strip() for th in table.xpath(".//th")]
+        print(f"Table {idx} headers: {headers}")
+        if "Application ID" in headers and "Name" in headers:
+            target_table = table
+            print(f"Using table {idx} as 'Running Applications' table.")
+            break
+
+    if not target_table:
+        print("Could not find the Running Applications table by headers.")
+        return []
+
+    header_indices = {h: i for i, h in enumerate([th.text_content().strip() for th in target_table.xpath(".//th")])}
+    print(f"Header indices: {header_indices}")
+
+    rows = target_table.xpath(".//tbody/tr")
+    print(f"Found {len(rows)} rows in the Running Applications table.")
+
+    jobs = []
+    for row in rows:
+        cols = row.xpath("./td")
+        if not cols:
+            continue
+        app_id = cols[header_indices.get("Application ID", -1)].text_content().strip().split('(kill)')[0].strip()
+        app_name = cols[header_indices.get("Name", -1)].text_content().strip() if "Name" in header_indices else ""
+        user = cols[header_indices.get("User", -1)].text_content().strip() if "User" in header_indices else ""
+        state = cols[header_indices.get("State", -1)].text_content().strip() if "State" in header_indices else ""
+        app_detail_link_elem = cols[header_indices.get("Application ID", -1)].xpath(".//a")
+        app_detail_link = app_detail_link_elem[0].get("href") if app_detail_link_elem else ""
+        if state.upper() == "RUNNING":
+            jobs.append({
+                "application_id": app_id,
+                "name": app_name,
+                "user": user,
+                "state": state,
+                "app_detail_link": app_detail_link
+            })
+
+    # For each job, get driver id from Environment tab
+    for job in jobs:
+        driver_id = ""
+        if job["app_detail_link"]:
+            # Compose full url for Application Detail UI
+            if job["app_detail_link"].startswith("http"):
+                detail_url = job["app_detail_link"]
+            else:
+                detail_url = f"{jobs_url}/{job['app_detail_link'].lstrip('/')}"
+            print(f"\nFetching Application Detail UI: {detail_url}")
+            try:
+                # Find the Application Detail UI link
+                detail_resp = requests.get(detail_url)
+                detail_tree = html.fromstring(detail_resp.content)
+                app_detail_ui_links = detail_tree.xpath("//a[contains(text(),'Application Detail UI')]")
+                if app_detail_ui_links:
+                    app_detail_ui_url = app_detail_ui_links[0].get("href")
+                    if not app_detail_ui_url.startswith("http"):
+                        # Handle proxy links (as in your screenshots)
+                        if app_detail_ui_url.startswith("/"):
+                            app_detail_ui_url = jobs_url + app_detail_ui_url
+                        else:
+                            app_detail_ui_url = jobs_url + "/" + app_detail_ui_url
+                else:
+                    print("Application Detail UI link not found, skipping.")
+                    continue
+                print(f"Application Detail UI URL: {app_detail_ui_url}")
+
+                # Go to Environment tab
+                env_tab_url = ""
+                env_resp = None
+                env_tree = None
+                # Try to find the Environment tab link
+                detail_ui_resp = requests.get(app_detail_ui_url)
+                detail_ui_tree = html.fromstring(detail_ui_resp.content)
+                env_tab_elem = detail_ui_tree.xpath("//a[contains(text(), 'Environment')]")
+                if env_tab_elem:
+                    env_tab_url = env_tab_elem[0].get("href")
+                    if not env_tab_url.startswith("http"):
+                        # Handle proxy links
+                        if env_tab_url.startswith("/"):
+                            env_tab_url = jobs_url + env_tab_url
+                        else:
+                            env_tab_url = jobs_url + "/" + env_tab_url
+                else:
+                    # Fallback: try app_detail_ui_url + "/environment"
+                    env_tab_url = app_detail_ui_url.rstrip("/") + "/environment"
+                print(f"Fetching Environment tab: {env_tab_url}")
+                env_resp = requests.get(env_tab_url)
+                env_tree = html.fromstring(env_resp.content)
+
+                # Find user.dir value
+                user_dir_elem = env_tree.xpath("//td[text()='user.dir']/following-sibling::td[1]")
+                if user_dir_elem:
+                    user_dir_val = user_dir_elem[0].text_content().strip()
+                    print(f"user.dir value: {user_dir_val}")
+                    # Extract driver id using regex
+                    match = re.search(r'(driver-\d+-\d+)', user_dir_val)
+                    if match:
+                        driver_id = match.group(1)
+                        print(f"Extracted driver ID: {driver_id}")
+                    else:
+                        print("Could not extract driver ID from user.dir value, fallback to full value.")
+                        driver_id = user_dir_val  # fallback: whole value
+                else:
+                    print("user.dir not found in environment table.")
+            except Exception as e:
+                print(f"Error fetching driver id for {job['application_id']}: {e}")
+
+        job["driver_id"] = driver_id
+        active_jobs.append(job)
+
+    return active_jobs
+
+if __name__ == "__main__":
+    spark_url = "http://keplerssot-prod-spark-master1.az.3pc.att.com:8080/"
+    jobs = get_active_jobs_with_ids(spark_url)
+    print("\nActive Running Applications (with IDs and Driver IDs):")
+    for job in jobs:
+        print(f"Application ID: {job['application_id']} | Name: {job['name']} | Driver ID: {job['driver_id']} | User: {job['user']} | State: {job['state']}")
