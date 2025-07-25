@@ -6,14 +6,14 @@ def get_active_jobs_with_ids(sparkUI_link):
     jobs_url = sparkUI_link.rstrip('/')
     active_jobs = []
 
-    print(f"Fetching {jobs_url} ...")
+    print(f"Fetching Spark Master UI: {jobs_url}")
     response = requests.get(jobs_url)
     print(f"Status Code: {response.status_code}")
     tree = html.fromstring(response.content)
 
     # Find the Running Applications table
     tables = tree.xpath("//table")
-    print(f"Found {len(tables)} tables total in page.")
+    print(f"Found {len(tables)} tables.")
 
     target_table = None
     for idx, table in enumerate(tables):
@@ -21,18 +21,16 @@ def get_active_jobs_with_ids(sparkUI_link):
         print(f"Table {idx} headers: {headers}")
         if "Application ID" in headers and "Name" in headers:
             target_table = table
-            print(f"Using table {idx} as 'Running Applications' table.")
+            print(f"Selected table {idx} for Running Applications.")
             break
 
     if not target_table:
-        print("Could not find the Running Applications table by headers.")
+        print("Running Applications table NOT found.")
         return []
 
     header_indices = {h: i for i, h in enumerate([th.text_content().strip() for th in target_table.xpath(".//th")])}
-    print(f"Header indices: {header_indices}")
-
     rows = target_table.xpath(".//tbody/tr")
-    print(f"Found {len(rows)} rows in the Running Applications table.")
+    print(f"Found {len(rows)} rows in Running Applications table.")
 
     jobs = []
     for row in rows:
@@ -58,68 +56,63 @@ def get_active_jobs_with_ids(sparkUI_link):
     for job in jobs:
         driver_id = ""
         if job["app_detail_link"]:
-            # Compose full url for Application Detail UI
+            # Compose full url for Application Detail page
             if job["app_detail_link"].startswith("http"):
                 detail_url = job["app_detail_link"]
             else:
                 detail_url = f"{jobs_url}/{job['app_detail_link'].lstrip('/')}"
-            print(f"\nFetching Application Detail UI: {detail_url}")
+            print(f"\nFetching App Detail: {detail_url}")
+
             try:
-                # Find the Application Detail UI link
                 detail_resp = requests.get(detail_url)
                 detail_tree = html.fromstring(detail_resp.content)
+                # Find Application Detail UI link
                 app_detail_ui_links = detail_tree.xpath("//a[contains(text(),'Application Detail UI')]")
                 if app_detail_ui_links:
                     app_detail_ui_url = app_detail_ui_links[0].get("href")
                     if not app_detail_ui_url.startswith("http"):
-                        # Handle proxy links (as in your screenshots)
                         if app_detail_ui_url.startswith("/"):
                             app_detail_ui_url = jobs_url + app_detail_ui_url
                         else:
                             app_detail_ui_url = jobs_url + "/" + app_detail_ui_url
+                    print(f"Application Detail UI URL: {app_detail_ui_url}")
                 else:
-                    print("Application Detail UI link not found, skipping.")
+                    print("Application Detail UI link not found.")
                     continue
-                print(f"Application Detail UI URL: {app_detail_ui_url}")
 
-                # Go to Environment tab
-                env_tab_url = ""
-                env_resp = None
-                env_tree = None
-                # Try to find the Environment tab link
+                # Find Environment tab link
                 detail_ui_resp = requests.get(app_detail_ui_url)
                 detail_ui_tree = html.fromstring(detail_ui_resp.content)
                 env_tab_elem = detail_ui_tree.xpath("//a[contains(text(), 'Environment')]")
                 if env_tab_elem:
                     env_tab_url = env_tab_elem[0].get("href")
                     if not env_tab_url.startswith("http"):
-                        # Handle proxy links
                         if env_tab_url.startswith("/"):
                             env_tab_url = jobs_url + env_tab_url
                         else:
                             env_tab_url = jobs_url + "/" + env_tab_url
                 else:
-                    # Fallback: try app_detail_ui_url + "/environment"
                     env_tab_url = app_detail_ui_url.rstrip("/") + "/environment"
                 print(f"Fetching Environment tab: {env_tab_url}")
+
                 env_resp = requests.get(env_tab_url)
                 env_tree = html.fromstring(env_resp.content)
-
-                # Find user.dir value
+                # Try extracting user.dir value
                 user_dir_elem = env_tree.xpath("//td[text()='user.dir']/following-sibling::td[1]")
                 if user_dir_elem:
                     user_dir_val = user_dir_elem[0].text_content().strip()
                     print(f"user.dir value: {user_dir_val}")
-                    # Extract driver id using regex
                     match = re.search(r'(driver-\d+-\d+)', user_dir_val)
                     if match:
                         driver_id = match.group(1)
-                        print(f"Extracted driver ID: {driver_id}")
+                        print(f"Extracted driver id: {driver_id}")
                     else:
-                        print("Could not extract driver ID from user.dir value, fallback to full value.")
-                        driver_id = user_dir_val  # fallback: whole value
+                        print("Regex did not match, fallback to user.dir value.")
+                        driver_id = user_dir_val
                 else:
-                    print("user.dir not found in environment table.")
+                    print("user.dir not found! Dumping Environment tab HTML for debugging:")
+                    print(env_resp.text[:1000]) # Print first 1000 chars for inspection
+
             except Exception as e:
                 print(f"Error fetching driver id for {job['application_id']}: {e}")
 
